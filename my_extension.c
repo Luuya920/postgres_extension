@@ -116,6 +116,12 @@ typedef struct AvgSpeedState
     int count;
 } AvgSpeedState;
 
+typedef struct
+{
+    double sum;
+    int64 count;
+} AvgState;
+
 PG_FUNCTION_INFO_V1(avg_speed_transfn);
 PG_FUNCTION_INFO_V1(avg_speed_finalfn);
 PG_FUNCTION_INFO_V1(avg_speed_combinefn);
@@ -254,6 +260,134 @@ Datum avg_speed_serializefn(PG_FUNCTION_ARGS)
 }
 
 Datum avg_speed_deserializefn(PG_FUNCTION_ARGS)
+{
+    bytea *sstate = PG_GETARG_BYTEA_P(0);
+    AvgSpeedState *result;
+    StringInfoData buf;
+
+    result = (AvgSpeedState *)palloc(sizeof(AvgSpeedState));
+
+    initStringInfo(&buf);
+    appendBinaryStringInfo(&buf, VARDATA(sstate), VARSIZE(sstate) - VARHDRSZ);
+
+    result->sum = pq_getmsgfloat8(&buf);
+    result->count = pq_getmsgint(&buf, sizeof(int32));
+
+    PG_RETURN_POINTER(result);
+}
+
+PG_FUNCTION_INFO_V1(avg_transfn);
+Datum avg_transfn(PG_FUNCTION_ARGS)
+{
+    AvgSpeedState *state;
+    MemoryContext agg_context;
+    MemoryContext old_context;
+
+    // Check if function is called in an aggregate context and get the memory context
+    if (!AggCheckCallContext(fcinfo, &agg_context))
+    {
+        elog(ERROR, "avg_transfn called in non-aggregate context");
+    }
+
+    // Switch to the aggregate memory context for allocating the state
+    old_context = MemoryContextSwitchTo(agg_context);
+
+    // Initialize or retrieve the state
+    if (PG_ARGISNULL(0))
+    {
+        state = (AvgSpeedState *)palloc(sizeof(AvgSpeedState));
+        state->sum = 0;
+        state->count = 0;
+    }
+    else
+    {
+        state = (AvgSpeedState *)PG_GETARG_POINTER(0);
+    }
+
+    if (!PG_ARGISNULL(1))
+    {
+        double speed = PG_GETARG_FLOAT8(1);
+        state->sum += speed;
+        state->count++;
+    }
+
+    // Switch back to the previous memory context
+    MemoryContextSwitchTo(old_context);
+
+    PG_RETURN_POINTER(state);
+}
+
+PG_FUNCTION_INFO_V1(avg_finalfn);
+Datum avg_finalfn(PG_FUNCTION_ARGS)
+{
+    AvgSpeedState *state = (AvgSpeedState *)PG_GETARG_POINTER(0);
+    double avg = state->count == 0 ? 0 : state->sum / state->count;
+
+    PG_RETURN_FLOAT8(avg);
+}
+
+PG_FUNCTION_INFO_V1(avg_combinefn);
+Datum avg_combinefn(PG_FUNCTION_ARGS)
+{
+    AvgSpeedState *state1;
+    AvgSpeedState *state2;
+    MemoryContext agg_context;
+    MemoryContext old_context;
+
+    // Check if function is called in an aggregate context and get the memory context
+    if (!AggCheckCallContext(fcinfo, &agg_context))
+    {
+        elog(ERROR, "avg_combinefn called in non-aggregate context");
+    }
+
+    old_context = MemoryContextSwitchTo(agg_context);
+
+    // Handle null states
+    if (PG_ARGISNULL(0))
+    {
+        state1 = (AvgSpeedState *)palloc(sizeof(AvgSpeedState));
+        state1->sum = 0;
+        state1->count = 0;
+    }
+    else
+    {
+        state1 = (AvgSpeedState *)PG_GETARG_POINTER(0);
+    }
+
+    if (!PG_ARGISNULL(1))
+    {
+        state2 = (AvgSpeedState *)PG_GETARG_POINTER(1);
+
+        // Combine the states
+        state1->sum += state2->sum;
+        state1->count += state2->count;
+    }
+
+    MemoryContextSwitchTo(old_context);
+
+    PG_RETURN_POINTER(state1);
+}
+
+PG_FUNCTION_INFO_V1(avg_serializefn);
+Datum avg_serializefn(PG_FUNCTION_ARGS)
+{
+    AvgSpeedState *state = (AvgSpeedState *)PG_GETARG_POINTER(0);
+    StringInfoData buf;
+    bytea *result;
+
+    pq_begintypsend(&buf);
+    pq_sendfloat8(&buf, state->sum);
+    pq_sendint32(&buf, state->count);
+    result = pq_endtypsend(&buf);
+
+    // Free the state after serialization to manage memory
+    pfree(state);
+
+    PG_RETURN_BYTEA_P(result);
+}
+
+PG_FUNCTION_INFO_V1(avg_deserializefn);
+Datum avg_deserializefn(PG_FUNCTION_ARGS)
 {
     bytea *sstate = PG_GETARG_BYTEA_P(0);
     AvgSpeedState *result;

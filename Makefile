@@ -4,6 +4,6 @@ MODULE_big = my_extension
 OBJS = my_extension.o
 DATA = my_extension--1.0.sql
 
-PG_CONFIG = /usr/bin/pg_config
+PG_CONFIG = pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
